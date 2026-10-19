@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite the software and technical report."
+title: "Evidence-Centered Video Tutorial Analysis: A Reproducible Pipeline and Single-Case Demonstration"
+authors:
+  - family-names: Huang
+    given-names: Chenlin
+version: 0.1.0
+date-released: 2026-10-20
+license: MIT
+repository-code: "https://github.com/quantumtool/video-knowledge-pipeline"
+abstract: >-
+  An auditable pipeline for video metadata inspection, timestamped frame
+  extraction, optional deduplication, subtitle alignment, and local VLM analysis.

@@ -1,0 +1,177 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{microtype}
+\hypersetup{colorlinks=true,allcolors=blue}
+\title{Evidence-Centered Video Tutorial Analysis:\\
+A Reproducible Pipeline and Single-Case Demonstration}
+\author{Chenlin Huang}
+\date{October 20, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Video tutorials combine visual state changes, spoken instructions, and temporal order. A tempting preprocessing recipe is to inspect frame rate and bitrate, extract frames densely, remove near-duplicates, and combine the selected images with a timestamped transcript. This report turns that recipe into an auditable, model-agnostic workflow and an evaluation protocol. It distinguishes decoded-pixel preservation from semantic knowledge retention, preserves the full decoded frame set while recording deduplication decisions, and specifies measurements for visual-event coverage, evidence-grounded fact extraction, temporal alignment, knowledge gain, and compute cost. We provide a single illustrative case based on a user-supplied screening log for an Illustrator tutorial: 50 candidate sample timestamps were recorded and 17 were manually retained, a 34\% retention rate among those candidates. The source video, all discarded candidate images, audio transcript, and model outputs were unavailable; this case therefore cannot establish accuracy, knowledge retention, or a benefit from dense sampling. Existing research already studies video knowledge acquisition, high-frame-rate input, and adaptive keyframe selection. Our contribution is a reproducible audit protocol and a small open-source implementation, not a claim that exhaustive frame extraction is novel or lossless.
+\end{abstract}
+
+\section{Introduction}
+Instructional videos distribute information across visible interface states, narration, and the order in which actions occur. A screenshot may reveal a menu choice or drawing state that is not spoken aloud; narration may state a parameter that is too small to read in a frame. For this reason, video-to-knowledge systems need to preserve both evidence and its position in time.
+
+A common intuition is to extract every frame, remove repeated images, and ask a multimodal model to learn from the remainder. The intuition identifies a real sampling problem, but the phrase \textit{lossless learning} conflates several distinct goals. Saving every decoded frame as PNG can preserve the decoded pixels. Sampling at a lower rate cannot guarantee that every transient visual event is observed. Perceptual deduplication may discard subtle changes. Finally, a model answering a prompt about video is performing inference; this does not by itself update or permanently train the model.
+
+The literature already addresses important parts of this space. Video-MMMU evaluates video-based knowledge acquisition through perception, comprehension, and adaptation questions \cite{videommmu}; Video-MMLU evaluates lecture understanding and visual-token choices \cite{videommlu}; and LEMON studies temporally structured, multimodal instructional video questions \cite{lemon}. Frame-rate and selection methods are also active topics: F-16 studies high-frame-rate video understanding \cite{f16}, while adaptive keyframe methods select informative frames under a budget \cite{aks,mllmselect}. Thus, neither frame sampling nor the general claim that models can acquire knowledge from video is new.
+
+This report makes a narrower contribution:
+\begin{enumerate}[leftmargin=1.5em]
+  \item It defines an auditable preprocessing protocol that retains the decoded source-frame archive and records timestamped selection decisions separately.
+  \item It specifies an evaluation design that distinguishes visual coverage, factual correctness, temporal grounding, transfer, and processing cost.
+  \item It releases a small command-line implementation and a carefully bounded single-tutorial annotation example.
+\end{enumerate}
+The present case is illustrative, not a benchmark and not evidence that any model learns better under dense sampling.
+
+\section{Related Work}
+\subsection{Video-based knowledge evaluation}
+Video-MMMU includes expert videos and stage-aligned questions for perception, comprehension, and adaptation, with a knowledge-gain measure \cite{videommmu}. Video-MMLU evaluates lecture review and quiz answering across multiple disciplines and studies visual-token counts \cite{videommlu}. LEMON focuses on temporally structured instructional lecture content and integrates video, audio, and text \cite{lemon}. These works show that knowledge acquisition from video is already an established evaluation problem. A useful follow-up study should compare concrete ingestion choices under controlled conditions rather than reintroduce the broad task as novel.
+
+\subsection{Frame sampling and selection}
+Uniform sparse sampling is computationally convenient but may miss short-lived events. F-16 reports gains on temporal video tasks from a model designed for 16-FPS inputs \cite{f16}. Adaptive Keyframe Sampling formulates frame selection around prompt relevance and temporal coverage \cite{aks}; M-LLM-based selection work also studies query-aware frame selection under limited context \cite{mllmselect}. These results reject a universal claim that all general-purpose models use one brute-force frame pipeline. For example, Gemini's public API documentation describes a 1-FPS static default, configurable sampling, and model-dependent adaptive video processing \cite{geminidocs}. Implementations are system-specific and can change over time.
+
+\subsection{Speech and temporal alignment}
+ASR subtitles provide a useful but imperfect text channel. HowToCaption uses timestamped ASR subtitles to generate video descriptions and then aligns the descriptions back to video time \cite{howtocaption}. Speech may omit visible actions, describe them before or after they happen, or contain recognition errors. Accordingly, transcripts should be treated as complementary evidence, not as a replacement for visual inspection.
+
+\section{Definitions and Scope}
+Let a video decode into frames $F=\{(I_i,t_i)\}_{i=1}^{N}$, where $I_i$ is a decoded image and $t_i$ its presentation timestamp. Let a time-coded transcript contain cues $A=\{(a_j,s_j,e_j)\}_{j=1}^{M}$. A model receives a budgeted representation $R(F,A)$ and answers a task-specific question.
+
+We use four preservation levels:
+\begin{description}[leftmargin=1.5em,style=nextline]
+  \item[Pixel preservation] The stored images reproduce the pixel arrays emitted by the selected decoder for the frames actually decoded.
+  \item[Event coverage] A sampled or selected representation contains visual evidence for annotated events, such as a menu opening or an operation being applied.
+  \item[Fact preservation] A model can recover a defined set of propositions from the representation with acceptable factual and temporal accuracy.
+  \item[Skill transfer] After viewing the material, a model or human can apply the demonstrated method to a new task.
+\end{description}
+Pixel preservation is not equivalent to event coverage, fact preservation, or skill transfer. A finite representation cannot be called semantically lossless without specifying the target facts, an annotation process, and an evaluation measure.
+
+The tool implements media inspection, decoded-frame extraction, optional similarity-based selection, transcript alignment, audio export, and an optional local vision-language model call. It does not train model parameters, create ASR transcripts, or establish that the generated answer is correct.
+
+\section{Auditable Workflow}
+\subsection{Metadata inspection}
+The first step records container and stream metadata: video codec, dimensions, duration, nominal and average frame rates, time base, and reported bitrates. Nominal and average FPS can differ for variable-frame-rate media. A reported container bitrate may include audio and container overhead; it should not be reported as the video stream bitrate unless the stream metadata supports that interpretation.
+
+\subsection{Timestamped frame decoding}
+The default extraction mode decodes every source presentation frame and saves its decoded pixels as PNG together with its timestamp. This is a preservation mode for local evidence review. It is not a requirement to send all frames to a model simultaneously: context length, image-token cost, API limits, and resolution policies remain separate constraints. For experiments, one may additionally create fixed-rate samples (for example, 1 FPS) and report that sampling policy explicitly.
+
+\subsection{Reversible deduplication}
+The pipeline computes an exact file hash for each decoded PNG and an optional 64-bit difference hash on a small grayscale thumbnail. Exact duplicate detection is separate from perceptual near-duplicate selection. A positive perceptual-distance threshold can reduce the selected set, but it is a heuristic that may miss small text, cursor movement, or subtle interface state changes. All decoded PNGs remain in the run directory; selection decisions are stored in a manifest and do not delete the raw archive.
+
+\subsection{Transcript and audio}
+A time-coded SRT or WebVTT transcript can be aligned to frames when a cue overlaps the frame timestamp, or when the nearest cue boundary falls within a configured window. The audio command can extract a mono waveform for an external ASR system. The transcript's provenance, model, language, word error rate where references exist, cue timing, and correction procedure should be reported in a study. The pipeline does not assume the transcript is correct or synchronous with visible actions.
+
+\subsection{Model-assisted extraction}
+An optional Ollama adapter sends selected images, timestamps, and available aligned transcript text to a local vision-language endpoint. It asks for atomic claims, evidence times, and uncertainty. This creates a model response for later validation; it is not persistent model learning. Any study using an external endpoint should disclose what media is transmitted and how costs and privacy are handled.
+
+\section{Evaluation Protocol}
+The following protocol is designed for future experiments with source-video access and human-checked annotations.
+
+\subsection{Research questions}
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{RQ1: Sampling density.} Under a fixed model and video-query set, how does sparse uniform sampling compare with denser or source-rate decoding on event coverage and answer quality?
+  \item \textbf{RQ2: Deduplication.} Under a matched visual-token or monetary budget, does similarity-based selection reduce redundant input while retaining annotated visual evidence?
+  \item \textbf{RQ3: Timestamped speech.} Does adding a corrected, time-aligned transcript improve fact recovery or temporal grounding beyond visual frames alone?
+  \item \textbf{RQ4: Knowledge use.} Does access to the video improve performance over a text-only or no-video baseline on comprehension and novel-transfer questions?
+\end{itemize}
+
+\subsection{Conditions and controls}
+For each licensed tutorial, prepare the same source clip, question set, model version, prompt template, and decoding settings. Compare (i) a sparse uniform visual baseline, (ii) a denser uniform sample such as 16 FPS when supported, (iii) source-rate decoding followed by a preregistered deduplication rule and a fixed input budget, and (iv) the same selected visual evidence plus a corrected, timestamped transcript. If the model or API cannot accept the full selected set, use documented chunking and report it. Run both a matched-budget comparison and a native-policy comparison where feasible; do not interpret higher accuracy caused by more input tokens as a free improvement.
+
+Questions should be written before model evaluation and classified as direct perception, procedural comprehension, and transfer/adaptation. Annotators should record the supporting video interval and modality (visual, spoken, or both). At least two annotators should independently label a subset and resolve disagreements before scoring. For transfer, create questions with changed inputs or novel scenarios so that prior knowledge alone cannot answer them.
+
+\subsection{Measures}
+Let $G$ be the set of annotated visual events. Event coverage is the fraction of events with at least one selected frame in a preregistered time window around the event. For extracted claims, report precision, recall, and F1 after mapping generated statements to human-annotated atomic facts. Report evidence precision: the proportion of claims whose cited interval and modality support the claim. Temporal grounding can be measured as the absolute difference between the predicted and annotated event time, with a tolerance-based recall also reported.
+
+For knowledge gain, use a no-video pretest and a post-video test containing matched but nonidentical questions. Report accuracy change and transfer-question accuracy; do not call a prompted answer an instance of permanent model learning. Report the number of candidate frames, selected frames, total visual tokens or image count, wall-clock time, GPU/CPU time where available, transcript tokens, and API cost. Confidence intervals should be clustered by video rather than by question alone.
+
+\section{Illustrative Case}
+The case record concerns a short public Bilibili tutorial on creating a traditional Chinese meander border in Adobe Illustrator (BV1BbHieLERk; the public source page is cited in the repository). The supplied screening log documents 50 candidate timestamps from 0.85 seconds to 50.54 seconds. It marks 17 candidates as retained and the rest as merged into adjacent stages. The retained-to-candidate ratio is $17/50=0.34$, so 66\% of the logged candidates were not retained as separate keyframes.
+
+\begin{table}[h]
+\centering
+\caption{Descriptive counts from the supplied screening log.}
+\begin{tabular}{lr}
+\toprule
+Logged candidate timestamps & 50 \\
+Manually retained keyframes & 17 \\
+Retention among logged candidates & 34\% \\
+Reduction among logged candidates & 66\% \\
+Time span of logged candidates & 0.85--50.54 s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The retained labels mark distinct tutorial stages such as displaying a grid, constructing the meander unit, opening the brush panel, applying a pattern brush, and reviewing the final circular border. The repository contains only the timestamp/status log and its provenance note. It does not redistribute the tutorial video or screenshots.
+
+These counts are descriptive of a human screening record, not a model result. The source video, the 33 discarded candidate images, full decoded frames, audio, transcript, frame rate, bitrate, and model answers were not available for this report. Therefore we cannot compute event recall, judge whether deduplication removed meaningful evidence, evaluate speech alignment, or claim that 17 frames suffice to learn the procedure. This missing-data boundary is central to the interpretation of the example.
+
+\section{Limitations and Responsible Use}
+The single case is user-curated and cannot estimate annotator agreement or generalize to other topics. The original video is hosted by a third party, and access or redistribution rights may differ by jurisdiction and platform terms. The repository therefore publishes no copied video frames. Future releases should include only material with permission or a clear license.
+
+The implementation's perceptual hash is a simple baseline, not a learned semantic selector. It may conflate similar-looking but semantically different screens and can miss small text. Source FPS metadata can be misleading for variable-frame-rate streams. ASR errors and asynchronous narration can create false associations. Local model answers can hallucinate or omit details and require evidence-based checking.
+
+Finally, all-frame decoding is a data-processing choice, not a guarantee of complete understanding. Even with a lossless image archive, practical model input is often sampled, compressed, resized, chunked, or adaptively selected. Claims of semantic preservation require task-specific measurements.
+
+\section{Conclusion}
+We present an auditable workflow and evaluation protocol for extracting timestamped visual and spoken evidence from instructional video. The accompanying example documents a human selection trace of 50 candidate times and 17 retained stages, but it cannot establish knowledge retention or model performance. Since prior work already studies video knowledge evaluation, high-frame-rate processing, and adaptive frame selection, the defensible contribution here is a reproducible implementation and a clear protocol for testing those design choices under measured evidence and cost. Future work should run the proposed comparisons on licensed videos with complete frame archives, corrected transcripts, and independently annotated knowledge questions.
+
+\begin{thebibliography}{9}
+\bibitem{videommmu}
+K. Hu, P. Wu, F. Pu, W. Xiao, Y. Zhang, X. Yue, B. Li, and Z. Liu.
+\newblock Video-MMMU: Evaluating Knowledge Acquisition from Multi-Discipline Professional Videos.
+\newblock arXiv:2501.13826, 2025.
+\newblock \url{https://arxiv.org/abs/2501.13826}
+
+\bibitem{videommlu}
+E. Song, W. Chai, W. Xu, J. Xie, Y. Liu, and G. Wang.
+\newblock Video-MMLU: A Massive Multi-Discipline Lecture Understanding Benchmark.
+\newblock arXiv:2504.14693, 2025.
+\newblock \url{https://arxiv.org/abs/2504.14693}
+
+\bibitem{lemon}
+Z. Yu, L. Shen, J. Zhao, and S. Sun.
+\newblock LEMON: How Well Do MLLMs Perform Temporal Multimodal Understanding on Instructional Videos?
+\newblock arXiv:2601.20705, 2026.
+\newblock \url{https://arxiv.org/abs/2601.20705}
+
+\bibitem{f16}
+Y. Li, C. Tang, J. Zhuang, Y. Yang, G. Sun, W. Li, Z. Ma, and C. Zhang.
+\newblock Improving LLM Video Understanding with 16 Frames Per Second.
+\newblock In \emph{Proceedings of the 42nd International Conference on Machine Learning}, PMLR 267, pp. 35942--35956, 2025.
+\newblock \url{https://proceedings.mlr.press/v267/li25cg.html}
+
+\bibitem{aks}
+X. Tang, J. Qiu, L. Xie, Y. Tian, J. Jiao, and Q. Ye.
+\newblock Adaptive Keyframe Sampling for Long Video Understanding.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition}, pp. 29118--29128, 2025.
+\newblock \url{https://openaccess.thecvf.com/content/CVPR2025/html/Tang_Adaptive_Keyframe_Sampling_for_Long_Video_Understanding_CVPR_2025_paper.html}
+
+\bibitem{mllmselect}
+K. Hu et al.
+\newblock M-LLM Based Video Frame Selection for Efficient Video Understanding.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition}, pp. 13702--13712, 2025.
+\newblock \url{https://openaccess.thecvf.com/content/CVPR2025/html/Hu_M-LLM_Based_Video_Frame_Selection_for_Efficient_Video_Understanding_CVPR_2025_paper.html}
+
+\bibitem{howtocaption}
+N. Shvetsova et al.
+\newblock HowToCaption: Prompting LLMs to Transform Video Annotations at Scale.
+\newblock arXiv:2310.04900, 2023.
+\newblock \url{https://arxiv.org/abs/2310.04900}
+
+\bibitem{geminidocs}
+Google.
+\newblock Video understanding with the Gemini API.
+\newblock Online documentation, accessed October 20, 2026.
+\newblock \url{https://ai.google.dev/gemini-api/docs/video-understanding}
+\end{thebibliography}
+\end{document}
